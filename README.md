@@ -85,12 +85,55 @@ That's it. No other changes required.
 
 ## What we're looking for in your output
 
-- **After step 4 (post-login, frozen)**: did the inbound HTTP logger record any activity with `type=invoke name=signin/tokenExchange` or `type=event name=tokens/response`?
-  - **If no** → the bug is upstream of your bot (BF / Copilot routing). Your bot is doing nothing wrong; sign-in completion is never being delivered to your endpoint.
-  - **If yes but `OnTurnError` fired** → the exception in the stack trace will tell us which piece of the SDK or your code threw during the invoke.
+### Reference: known-good output from a working silent SSO flow
+
+Captured live from this helper deployed to an Azure Container App, tested in M365 Copilot Web against a CEA backed by a GitHub OAuth connection on `Microsoft.Agents.Builder 1.5.184`:
+
+```text
+15:11:07  [OAUTH-DIAG] inbound: type=message    name=(null)               text=/login          channel=msteams  …
+15:11:36  [OAUTH-DIAG] inbound: type=invoke     name=signin/verifyState   value_keys=state     channel=msteams  …
+                                                ^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^
+                                                this is the silent-SSO    state payload carries
+                                                callback from BF Token    the magic code BF
+                                                Service to your bot       just issued
+```
+
+A successful silent SSO **must** show a `type=invoke name=signin/verifyState` (or `type=event name=tokens/response`, or `type=invoke name=signin/tokenExchange` for the SSO-token-exchange variant) arriving at your bot within a second or two of the user clicking "Sign In". If this activity never appears in your logs, the silent-SSO callback is not reaching your endpoint at all — the bug is upstream of your bot (BF / Copilot routing / firewall / ingress).
+
+### Diagnosing your broken-session capture
+
+- **After step 4 (post-login, frozen)**: did the inbound HTTP logger record any activity with `type=invoke name=signin/tokenExchange`, `type=invoke name=signin/verifyState`, or `type=event name=tokens/response`?
+  - **If no** → the bug is upstream of your bot. Sign-in completion is never being delivered to your endpoint. (Check WAF/firewall, ingress, JWT validation rejecting invokes.)
+  - **If yes but `OnTurnError` fired** → the stack trace tells us which piece of the SDK or your code threw during the invoke.
   - **If yes and no `OnTurnError`** → the SDK processed it but didn't transition `FlowStarted=false`. The `/diag` output from step 5 will tell us why.
 - **In `/diag` step 5**: is `FlowState` present with `FlowStarted=true` *after* a successful login? If yes, sign-in completion isn't clearing it. If no, the issue is elsewhere.
-- **In `/diag` step 7**: same question, after the "Invalid sign in code" appears. Confirms whether the `OnContinueFlow` retry-loop is the path firing.
+- **In `/diag` step 7**: same question, after "Invalid sign in code" appears. Confirms whether the `OnContinueFlow` retry-loop is the path firing.
+
+### M365 Copilot Web quirk — `messageUpdate` activities
+
+Confirmed live: when a user **edits a previous message** in Copilot Web (and in some other UI states — e.g. re-submitting a previous slash command), Copilot delivers the activity as `type=messageUpdate` rather than `type=message`. The inbound logger captures these correctly, but **the SDK's `OnMessage(...)` route registrations only match `ActivityTypes.Message`** — so route handlers don't fire, the bot returns nothing, and the Copilot UI shows the generic "Sorry, something went wrong" timeout message.
+
+What to check in your logs:
+
+```text
+[OAUTH-DIAG] inbound: type=messageUpdate ... text=<your command>
+```
+
+If you see this for messages the user expected to work, your route handlers are silently being bypassed. Fix on your side is a 2-line addition — register sibling handlers for `MessageUpdate`:
+
+```csharp
+OnMessage("/yourcommand", YourHandler);
+OnActivity(ActivityTypes.MessageUpdate, (ctx, state, ct) =>
+{
+    if ((ctx.Activity.Text ?? "").Trim() == "/yourcommand")
+        return YourHandler(ctx, state, ct);
+    return Task.CompletedTask;
+});
+```
+
+(Or a single catch-all that dispatches by text regardless of activity type.)
+
+This isn't a bug in this diagnostic helper or in `Microsoft.Agents.Builder` — it's a Copilot delivery behavior worth being aware of when diagnosing "frozen" or "no response" symptoms.
 
 ## Safety notes
 
@@ -104,4 +147,4 @@ That's it. No other changes required.
 - **`/diag` route shadowing:** if your host already registers an `OnMessage("/diag", ...)` handler before calling `OAuthDiagnostics.Register(...)`, the host's handler wins (the SDK matches the first-registered route by rank). The helper's `/diag` is silently shadowed — no startup error, no warning. If you want the helper's `/diag` to take effect in a host with a pre-existing one, either remove the host's registration or rename one of them (e.g. change the helper's command to `/oauthdiag` in `OAuthDiagnostics.cs`).
 - **`OnUserSignInFailure` is a single-delegate slot:** if your host calls `UserAuthorization.OnUserSignInFailure(...)` after `OAuthDiagnostics.Register(...)`, the host's delegate replaces the helper's. To get both, wrap your existing handler so it also calls the helper's (or call `Register(...)` last).
 - **`OnTurnError` chaining is preserved:** `InstallTurnErrorLogger` (and the in-line install inside `Register`) wraps any existing `OnTurnError` and calls it after logging, so this one composes safely with whatever the host already had.
-- **Verified working:** all four diagnostics run successfully end-to-end against `Microsoft.Agents.Builder 1.5.184` with synthetic activities (plain `message`, `invoke signin/tokenExchange`, `event tokens/response`, malformed JSON, non-POST). No SDK warnings or errors at startup or runtime.
+- **Verified working in production:** all four diagnostics ran successfully end-to-end against `Microsoft.Agents.Builder 1.5.184` — both as local unit tests (synthetic `message` / `invoke signin/tokenExchange` / `event tokens/response` / malformed JSON / non-POST) and as a live deployment to an Azure Container App tested in M365 Copilot Web with real Copilot-issued activities (`message`, `invoke signin/verifyState`, `conversationUpdate`, `messageUpdate`). No SDK warnings or errors at startup or runtime in either environment.
