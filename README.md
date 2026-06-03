@@ -98,3 +98,10 @@ That's it. No other changes required.
 - The inbound HTTP logger logs activity *metadata* (type, name, channel id, conversation id, value-payload key names), **not** request bodies in full. If your activities ever carry secrets in `value`, you can adjust the `value_keys` line to drop that field.
 - All diagnostic output goes through `ILogger` — wire up your usual log scrubbing if anything sensitive surfaces.
 - Removing the diagnostics later is just: delete `OAuthDiagnostics.cs`, remove the three setup lines, redeploy.
+
+## Known co-existence behavior
+
+- **`/diag` route shadowing:** if your host already registers an `OnMessage("/diag", ...)` handler before calling `OAuthDiagnostics.Register(...)`, the host's handler wins (the SDK matches the first-registered route by rank). The helper's `/diag` is silently shadowed — no startup error, no warning. If you want the helper's `/diag` to take effect in a host with a pre-existing one, either remove the host's registration or rename one of them (e.g. change the helper's command to `/oauthdiag` in `OAuthDiagnostics.cs`).
+- **`OnUserSignInFailure` is a single-delegate slot:** if your host calls `UserAuthorization.OnUserSignInFailure(...)` after `OAuthDiagnostics.Register(...)`, the host's delegate replaces the helper's. To get both, wrap your existing handler so it also calls the helper's (or call `Register(...)` last).
+- **`OnTurnError` chaining is preserved:** `InstallTurnErrorLogger` (and the in-line install inside `Register`) wraps any existing `OnTurnError` and calls it after logging, so this one composes safely with whatever the host already had.
+- **Verified working:** all four diagnostics run successfully end-to-end against `Microsoft.Agents.Builder 1.5.184` with synthetic activities (plain `message`, `invoke signin/tokenExchange`, `event tokens/response`, malformed JSON, non-POST). No SDK warnings or errors at startup or runtime.
