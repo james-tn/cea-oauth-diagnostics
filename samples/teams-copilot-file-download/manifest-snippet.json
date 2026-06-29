@@ -1,0 +1,13 @@
+{
+  "//": "Add supportsFiles:true to the bot entry in your Teams app manifest (manifest.json).",
+  "//2": "Without it, Teams shows 'This card action is not supported' and never sends the",
+  "//3": "fileConsent/invoke to your bot, so upload-to-OneDrive (FileConsentCard) cannot work.",
+  "bots": [
+    {
+      "botId": "<YOUR_BOT_APP_ID>",
+      "scopes": [ "personal", "team", "groupChat" ],
+      "supportsFiles": true,
+      "isNotificationOnly": false
+    }
+  ]
+}

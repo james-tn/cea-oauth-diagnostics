@@ -148,3 +148,11 @@ This isn't a bug in this diagnostic helper or in `Microsoft.Agents.Builder` — 
 - **`OnUserSignInFailure` is a single-delegate slot:** if your host calls `UserAuthorization.OnUserSignInFailure(...)` after `OAuthDiagnostics.Register(...)`, the host's delegate replaces the helper's. To get both, wrap your existing handler so it also calls the helper's (or call `Register(...)` last).
 - **`OnTurnError` chaining is preserved:** `InstallTurnErrorLogger` (and the in-line install inside `Register`) wraps any existing `OnTurnError` and calls it after logging, so this one composes safely with whatever the host already had.
 - **Verified working in production:** all four diagnostics ran successfully end-to-end against `Microsoft.Agents.Builder 1.5.184` — both as local unit tests (synthetic `message` / `invoke signin/tokenExchange` / `event tokens/response` / malformed JSON / non-POST) and as a live deployment to an Azure Container App tested in M365 Copilot Web with real Copilot-issued activities (`message`, `invoke signin/verifyState`, `conversationUpdate`, `messageUpdate`). No SDK warnings or errors at startup or runtime in either environment.
+
+## Samples
+
+- [`samples/teams-copilot-file-download`](samples/teams-copilot-file-download) — delivering a
+  file from a bot/agent across surfaces. Shows a **portable download link** (works in native
+  Teams **and** embedded M365 Copilot) and a Teams **`FileConsentCard`** upload-to-OneDrive
+  flow (Teams-only; requires `"supportsFiles": true` in the app manifest — embedded Copilot
+  doesn't support file consent). Self-contained; builds against `Microsoft.Agents.Builder` 1.5.x.
