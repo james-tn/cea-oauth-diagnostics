@@ -26,6 +26,8 @@
 //          var t = (ctx.Activity.Text ?? "").Trim();
 //          if (t.StartsWith("/sendlink", StringComparison.OrdinalIgnoreCase))
 //              return FileDownloadSamples.SendLinkAsync(ctx, publicBaseUrl, externalUrl, ct);
+//          if (t.StartsWith("/sendcard", StringComparison.OrdinalIgnoreCase))
+//              return FileDownloadSamples.SendDownloadCardAsync(ctx, publicBaseUrl, externalUrl, ct);
 //          if (t.StartsWith("/sendfile", StringComparison.OrdinalIgnoreCase))
 //              return FileDownloadSamples.SendFileConsentAsync(ctx, ct);
 //          return Task.CompletedTask;
@@ -93,6 +95,48 @@ public static class FileDownloadSamples
     }
 
     // ---------------------------------------------------------------------
+    // /sendcard — Adaptive Card with a working "Download" button.
+    // This is the FIXED version of the common broken pattern (an Action.OpenUrl
+    // bound to a data: URI, which silently no-ops in native Teams — see README).
+    // The button points at a real https URL, so it works in native Teams AND
+    // M365 Copilot. Build the card as a JsonElement (NOT an anonymous object) so
+    // the Agents SDK serializes it faithfully and Teams renders it.
+    // ---------------------------------------------------------------------
+    public static async Task SendDownloadCardAsync(
+        ITurnContext ctx, string? publicBaseUrl, string? externalUrl, CancellationToken ct)
+    {
+        var url = !string.IsNullOrEmpty(publicBaseUrl)
+            ? $"{publicBaseUrl}/files/sample.csv"
+            : externalUrl;
+        if (string.IsNullOrEmpty(url))
+        {
+            await ctx.SendActivityAsync(
+                "No download URL configured. Provide a publicBaseUrl or externalUrl.",
+                cancellationToken: ct);
+            return;
+        }
+
+        var cardJson =
+            "{\"type\":\"AdaptiveCard\"," +
+            "\"$schema\":\"http://adaptivecards.io/schemas/adaptive-card.json\"," +
+            "\"version\":\"1.4\"," +
+            "\"body\":[" +
+                "{\"type\":\"TextBlock\",\"text\":\"" + SampleFileName + "\",\"weight\":\"Bolder\",\"size\":\"Medium\"}," +
+                "{\"type\":\"TextBlock\",\"wrap\":true,\"text\":\"Downloads in native Teams and M365 Copilot.\"}" +
+            "]," +
+            "\"actions\":[{\"type\":\"Action.OpenUrl\",\"title\":\"Download\",\"url\":" +
+                JsonSerializer.Serialize(url) + "}]" +
+            "}";
+
+        var attachment = new Attachment
+        {
+            ContentType = "application/vnd.microsoft.card.adaptive",
+            Content = JsonSerializer.Deserialize<JsonElement>(cardJson),
+        };
+        await ctx.SendActivityAsync(MessageFactory.Attachment(attachment), ct);
+    }
+
+    // ---------------------------------------------------------------------
     // /sendfile — Teams FileConsentCard (Teams channel only)
     // ---------------------------------------------------------------------
     public static async Task SendFileConsentAsync(ITurnContext ctx, CancellationToken ct)
@@ -138,6 +182,8 @@ public static class FileDownloadSamples
             {
                 var uploadUrl = upload.GetProperty("uploadUrl").GetString();
                 var name = upload.TryGetProperty("name", out var n) ? n.GetString() : SampleFileName;
+                // contentUrl = the OneDrive/SharePoint web URL of the uploaded file.
+                var contentUrl = upload.TryGetProperty("contentUrl", out var cu) ? cu.GetString() : null;
 
                 var bytes = SampleCsvBytes();
                 using var content = new ByteArrayContent(bytes);
@@ -146,8 +192,12 @@ public static class FileDownloadSamples
                 using var resp = await _http.PutAsync(uploadUrl, content, ct);
                 resp.EnsureSuccessStatusCode();
 
-                // Plain text (a FileInfoCard can render as an "unsupported card").
-                await ctx.SendActivityAsync($"✅ Uploaded **{name}** to your OneDrive.", cancellationToken: ct);
+                // Confirm with a clickable OneDrive link (a FileInfoCard can render
+                // as an "unsupported card", so we use a markdown link instead).
+                var msg = string.IsNullOrEmpty(contentUrl)
+                    ? $"✅ Uploaded **{name}** to your OneDrive."
+                    : $"✅ Uploaded **{name}** to your OneDrive — [open / download it here]({contentUrl}).";
+                await ctx.SendActivityAsync(msg, cancellationToken: ct);
             }
             else
             {

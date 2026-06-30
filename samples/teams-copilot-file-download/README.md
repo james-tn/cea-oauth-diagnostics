@@ -15,11 +15,47 @@ M365 Copilot experience.
 `FileConsentCard` only as a Teams-only enhancement (e.g. if you specifically want to push the
 file into the user's OneDrive).
 
-## Two commands in the sample
-- `/sendlink` — sends a **markdown download link**. Works in **both** Teams and Copilot.
-- `/sendfile` — sends a Teams **`FileConsentCard`**; on accept, the bot uploads the bytes to
-  the user's OneDrive. **Teams only** (the sample detects the surface and, in Copilot, replies
-  with a short note instead).
+## Choosing an approach
+
+There are two viable patterns. The decision is essentially **"do I want to host the bytes?"**
+vs. **"do I need it to work in Copilot too?"**
+
+| | **Download link** (`/sendlink`, `/sendcard`) | **`FileConsentCard`** (`/sendfile`) |
+|---|---|---|
+| You host the bytes | ✅ required (Azure Blob + SAS, or your own endpoint) | ❌ **not needed** — uploads to the **user's** OneDrive |
+| Microsoft Graph permission / user token | not needed | **not needed** (Teams provides a pre-authorized upload URL) |
+| Works in native Teams | ✅ | ✅ (requires `"supportsFiles": true`) |
+| Works in **embedded M365 Copilot** | ✅ | ❌ not supported |
+| User action | one click on the link | must click **Allow** on the consent card |
+| Result | direct download | file saved to the user's OneDrive (bot gets a `contentUrl` link) |
+
+- **Pick the download link** if you need it to work in **both** Teams and Copilot, or want a
+  true "click → download". You just have to host the bytes — a short-lived, read-only Azure
+  Blob **SAS** URL with `Content-Disposition: attachment` is the typical choice.
+- **Pick the `FileConsentCard`** if you want **zero hosting** and only need **Teams** — the file
+  is created in memory and pushed straight to the user's OneDrive.
+
+### How the `FileConsentCard` upload works (no storage, no Graph)
+1. The bot sends the consent card (file **name + size only** — no bytes yet).
+2. The user clicks **Allow** → **Teams** provisions a location in the **user's OneDrive** and
+   sends the bot a `fileConsent/invoke` containing a **pre-authorized `uploadInfo.uploadUrl`**.
+3. The bot **PUTs the bytes** (generated **in memory**) to that URL — no Blob/SAS, and **no
+   Graph permission or user token** required; the pre-authorized URL carries the write
+   authorization.
+4. The file now lives in the user's OneDrive; `uploadInfo.contentUrl` is the web link to it,
+   which the bot can show the user (this sample returns it as a clickable markdown link).
+
+Notes: cleanest in **1:1 / personal** chats; the user needs OneDrive for Business provisioned
+(standard in M365); larger files use chunked `Content-Range` uploads.
+
+## Commands in the sample
+- `/sendlink` — a **markdown download link**. Works in **both** Teams and Copilot.
+- `/sendcard` — an **Adaptive Card with a "Download" button** (`Action.OpenUrl` → **https** URL).
+  Works in **both** Teams and Copilot. This is the correct version of the common broken pattern
+  (see gotcha #3).
+- `/sendfile` — a Teams **`FileConsentCard`**; on accept, the bot uploads the bytes to the
+  user's OneDrive and returns a link. **Teams only** (the sample detects the surface and, in
+  Copilot, replies with a short note instead).
 
 ## The gotchas that bite people
 
@@ -48,8 +84,9 @@ issue.
 **Fix:** persist the bytes and hand the button a real **`https://`** URL — e.g. an Azure Blob
 **short-lived, read-only SAS** URL with `Content-Disposition: attachment; filename="…"` so it
 triggers a true download on every client. A real `https` URL works in native Teams **and**
-Copilot web, so both surfaces share one code path. (That is exactly what `/sendlink` does — and
-an Adaptive Card `Action.OpenUrl` is fine too, **as long as its `url` is `https`, not `data:`**.)
+Copilot web, so both surfaces share one code path. (`/sendcard` is exactly this — the same
+Adaptive Card `Action.OpenUrl` structure, but with an **`https`** url instead of `data:` — and
+`/sendlink` is the plain-markdown equivalent.)
 
 ## Implementation notes (Microsoft.Agents SDK 1.5.x)
 - The SDK has **no `FileConsentCard`/`FileInfoCard` type** — the card and the
