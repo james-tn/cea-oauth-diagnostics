@@ -21,7 +21,7 @@ file into the user's OneDrive).
   the user's OneDrive. **Teams only** (the sample detects the surface and, in Copilot, replies
   with a short note instead).
 
-## The two gotchas that bite people
+## The gotchas that bite people
 
 ### 1. Teams `FileConsentCard` requires `"supportsFiles": true` in the manifest
 If the bot entry in your Teams app manifest does **not** set `"supportsFiles": true`, clicking
@@ -32,6 +32,24 @@ changing the manifest, bump the `version` and re-upload/update the app.
 ### 2. Embedded M365 Copilot does not support `FileConsentCard`
 There is no file-consent/OneDrive-upload path in the embedded Copilot surface. Detect the
 surface (see `Surface(...)` in the sample) and fall back to a **download link** there.
+
+### 3. Don't put a `data:` URI in an Adaptive Card `Action.OpenUrl`
+A tempting shortcut is to embed the file bytes directly in the card — binding an
+`Action.OpenUrl` to a `data:<mime>;base64,…` URI. **This fails silently in native Teams
+(desktop and mobile): clicking the button does nothing.** Teams' `Action.OpenUrl` only opens
+**`http`/`https`** (and Teams deep-link) schemes — `data:`, `blob:` and `file:` are not
+handled. It appears to work in Teams/M365 Copilot **web** only because the browser-based host
+can open/download the `data:` URI.
+
+Embedding base64 also inflates the activity payload, which Teams/Bot Framework caps at
+**~28 KB**, so anything but a tiny file can fail to send entirely — independent of the scheme
+issue.
+
+**Fix:** persist the bytes and hand the button a real **`https://`** URL — e.g. an Azure Blob
+**short-lived, read-only SAS** URL with `Content-Disposition: attachment; filename="…"` so it
+triggers a true download on every client. A real `https` URL works in native Teams **and**
+Copilot web, so both surfaces share one code path. (That is exactly what `/sendlink` does — and
+an Adaptive Card `Action.OpenUrl` is fine too, **as long as its `url` is `https`, not `data:`**.)
 
 ## Implementation notes (Microsoft.Agents SDK 1.5.x)
 - The SDK has **no `FileConsentCard`/`FileInfoCard` type** — the card and the
